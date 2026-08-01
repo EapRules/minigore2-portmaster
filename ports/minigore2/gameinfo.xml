@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<gameList>
+	<game>
+		<path>./Minigore 2.sh</path>
+		<name>Minigore 2: Zombies</name>
+		<desc>Twin-stick zombie shooter by Mountain Sheep. John Gore and friends against endless waves of furries and zombies across five arenas.
+
+This port runs the game's original Android native library directly on Linux through a NativeActivity loader, so no emulator is involved. You supply your own APK.
+
+Left stick walks. A, R1 or R2 fire. The menus are touch-only in this build, so the d-pad moves an on-screen cursor and B taps with it.</desc>
+		<releasedate>20121206T000000</releasedate>
+		<developer>Mountain Sheep</developer>
+		<publisher>Mountain Sheep</publisher>
+		<genre>Shooter</genre>
+		<players>1</players>
+		<image>./minigore2/cover.png</image>
+	</game>
+</gameList>

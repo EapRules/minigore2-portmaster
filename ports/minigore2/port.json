@@ -1,0 +1,41 @@
+{
+  "version": 4,
+  "name": "minigore2.zip",
+  "items": [
+    "Minigore 2.sh",
+    "minigore2"
+  ],
+  "attr": {
+    "title": "Minigore 2: Zombies",
+    "porter": [
+      "EapRules"
+    ],
+    "desc": "Twin-stick zombie shooter by Mountain Sheep. John Gore and friends against endless waves of furries and zombies across five arenas. This port runs the game's original Android native library directly on Linux through a NativeActivity loader, so no emulator is involved.",
+    "desc_md": null,
+    "inst": "You need your own copy: the Android APK for net.mountainsheep.minigore2zombies, version 1.28 (the last release, May 2017). Rename it to minigore2.apk and put it in ports/minigore2/ while the card is still in your computer, in the same trip as the zip - watch the extension, some download sites hand you .5apk or .apk.zip. Nothing is downloaded and no game data ships in this zip.\n\nAFTER INSTALLING, REBOOT THE CONSOLE. The game does not appear in Ports until you do: the autoinstall never refreshes the frontend. And do not use Reinstall or Uninstall under Manage Ports - they re-download from PortMaster's catalogue, where this port does not exist, and remove it in the process.\n\nControls: left stick walks. A (the right-hand button), R1 or R2 fire. The right stick aims by hand, but auto-aim is on by default so it is optional. The menus are touch-only in this build, so the d-pad moves an on-screen cursor and B taps with it.\n\nRequires an armhf userland with 32-bit GPU libraries, the same bar as box86 and GMLoader.",
+    "inst_md": null,
+    "genres": [
+      "action",
+      "shooter",
+      "arcade"
+    ],
+    "image": {},
+    "rtr": false,
+    "runtime": null,
+    "reqs": [
+      "armhf"
+    ],
+    "arch": [
+      "armhf"
+    ],
+    "min_glibc": "2.38",
+    "status": {
+      "source": "https://github.com/eaprules/minigore2-portmaster",
+      "date_added": "2026-07-28"
+    },
+    "publisher": "Mountain Sheep",
+    "developer": "Mountain Sheep",
+    "released": "2012-12-06",
+    "players": "1"
+  }
+}
