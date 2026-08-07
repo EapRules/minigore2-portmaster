@@ -49,8 +49,15 @@ $(OBJDIR)/%.cpp.o: %.cpp
 
 # The .so files the zip has to carry. Generated, never checked in: they are
 # Debian binaries and tools/collect_libs.sh reproduces them exactly.
+#
+# The glibc floor is checked here rather than at package time because this is
+# the first moment the full set of shipped ELFs exists. It is a gate, not a
+# report: a binary that needs a newer glibc than the oldest supported CFW dies
+# at load on the device with "GLIBC_x.y not found", and nothing in the harness
+# can see it - the harness runs on a modern host.
 libs: $(TARGET)
 	tools/collect_libs.sh $(TARGET) build/libs.armhf
+	tools/check_glibc_floor.sh $(TARGET) build/libs.armhf
 
 clean:
 	rm -rf build

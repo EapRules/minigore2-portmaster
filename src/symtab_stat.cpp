@@ -1,10 +1,9 @@
 /*
  * fstat, in bionic's layout.
  *
- * The fourth host-vs-bionic struct mismatch of this port, and the one
- * progress.md has been predicting since iteration 2. The generated bionic
- * table binds fstat straight through to the host's, but the two sides do not
- * agree on what a `struct stat` is:
+ * The fourth host-vs-bionic struct mismatch of this port - by now the
+ * predictable kind. The generated bionic table binds fstat straight through
+ * to the host's, but the two sides do not agree on what a `struct stat` is:
  *
  *   - bionic/armeabi-v7a uses the kernel's stat64 layout, 104 bytes, with
  *     32-bit time fields;

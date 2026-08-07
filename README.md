@@ -11,10 +11,6 @@ loader, and the pieces of Android it asks for are implemented here by hand.
 
 Download the ready-to-use zip from the [Releases](../../releases) page.
 
-**How does a 2012 Android binary run natively on ARM Linux?** The loader,
-the truthful-JNI rule, the pixel-readback verification and the packaging
-for exFAT are documented in [`TECHNICAL.md`](TECHNICAL.md).
-
 ## Install
 
 **Do not unzip this into `ports/` by hand.** PortMaster's own FAQ warns that
@@ -114,13 +110,37 @@ by position and the silkscreen disagrees, so set this in `Minigore 2.sh`:
 export MINIGORE_FACE_LAYOUT="${MINIGORE_FACE_LAYOUT:-xbox}"
 ```
 
+## The screen
+
+The loader opens its window at the panel's own resolution (SDL's desktop mode)
+and tells the engine that size through `eglQuerySurface`. That is the lever
+that matters: the engine reads its resolution from EGL, not from the
+`ANativeWindow`, which was established by telling the two different numbers and
+watching which one came back as the engine's own `glViewport`. Given 1280x720
+it issues a full-screen 1280x720 viewport and lays the game out for it.
+
+| Variable | Effect |
+|---|---|
+| `MINIGORE_RENDER=native` | default; hand the engine the panel's real size |
+| `MINIGORE_RENDER=scaled` | render at 640x480 and map that onto the panel |
+| `MINIGORE_SCALE` | `fit` (default), `stretch` or `integer`, scaled mode only |
+| `MINIGORE_PANEL_W` / `_H` | force a panel size the firmware reports wrongly |
+
+`scaled` is the fallback for an engine layout that turns out wrong on some
+screen. In that mode `viewport_scale_init` remaps the engine's one full-screen
+viewport and every scissor rectangle onto the panel; anything the port paints
+itself in physical pixels — the cursor — goes through `viewport_scale_map` or
+it would stay trapped in the logical rectangle.
+
 ## Requirements
 
 - **armhf userland with 32-bit GPU libraries.** The game ships only an
   `armeabi-v7a` library, so the loader is 32-bit. Your CFW needs `CONFIG_COMPAT`
   in the kernel and 32-bit Mali libraries — the same bar as box86 and GMLoader.
   Devices without them (the TrimUI Smart Pro, for instance) cannot run this.
-- **glibc 2.38+.**
+- **glibc 2.29+**, enforced at build time by `tools/check_glibc_floor.sh`
+  against a bullseye toolchain. It used to be 2.38, which excluded ArkOS and
+  AeolusUX.
 
 Tested on an **R36S** (G80CA-MB V1.2, RK3326, Mali-G31) running dArkOSRE. That
 is the only device this has run on, so anything else is unknown rather than
@@ -148,23 +168,33 @@ Lines worth knowing about:
 
 Everything builds in a container, so the only dependency is Docker (or
 [colima](https://github.com/abiosoft/colima) on macOS). The image is Debian
-arm64 — native and fast on Apple Silicon — cross-compiling to
-`arm-linux-gnueabihf`.
+bullseye on arm64 — native and fast on Apple Silicon — cross-compiling to
+`arm-linux-gnueabihf`. Bullseye is not nostalgia: its glibc 2.31 is the ceiling
+the shipped binaries are allowed to demand, and building on anything newer
+produces a port that will not load on ArkOS or AeolusUX. `Dockerfile.build`
+explains the rest, including why it vendors and builds SDL 2.0.22.
+
+The image name is the one `harness/verify.sh` expects:
 
 ```bash
-docker build -f Dockerfile.build -t minigore2-build .
-docker run --rm -v "$PWD":/src -w /src minigore2-build make -j4
+docker build -f Dockerfile.build -t minigore-build .
+docker run --rm -v "$PWD":/src -w /src minigore-build make -j4
 ```
 
 The binary lands at `build/minigore2`. To assemble the libraries that travel in
 the zip:
 
 ```bash
-docker run --rm -v "$PWD":/src -w /src minigore2-build tools/collect_libs.sh
+docker run --rm -v "$PWD":/src -w /src minigore-build make libs
 ```
 
 `collect_libs.sh` is deliberately picky about what ships: glibc, the dynamic
 linker and anything GPU-related must come from the device, never from the zip.
+`make libs` then runs `tools/check_glibc_floor.sh` over the binary and every
+bundled `.so`, and fails the build if any of them needs a glibc newer than the
+floor. That gate is the only thing that catches the problem: the harness runs on
+a modern host and a too-new binary passes it perfectly, then dies on the device
+with `GLIBC_x.y not found`.
 
 ## Verifying without the console
 

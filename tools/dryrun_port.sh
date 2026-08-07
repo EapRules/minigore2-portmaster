@@ -241,7 +241,15 @@ check "libs.armhf covers every non-system library" test -z "$MISSING"
 # Guard the guard: if nothing was moved, the run above proved nothing about
 # libs.armhf, because the system copies were still there to be found.
 check "system copies of the bundled libs removed"  test "$MOVED" -gt 0
-check_not "libzip reachable outside the port"      test -e /usr/lib/arm-linux-gnueabihf/libzip.so.5
+# Matched by glob, not by soname: the build base decides the version (bullseye
+# ships libzip.so.4, trixie shipped .so.5), and a hardcoded name that no longer
+# exists turns this into a check that passes without checking anything.
+# (Called indirectly, through check_not.)
+# shellcheck disable=SC2329
+system_libzip_present() {
+    ls /usr/lib/arm-linux-gnueabihf/libzip.so.* >/dev/null 2>&1
+}
+check_not "libzip reachable outside the port"      system_libzip_present
 
 LOG="$GAMEDIR/log.txt"
 check "log.txt written by the launcher"          test -s "$LOG"

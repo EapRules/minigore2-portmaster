@@ -61,10 +61,29 @@ fi
 # assert on facts rather than on the absence of a crash.
 log "M2-M6 running under qemu-arm (timeout ${TIMEOUT}s)"
 
+# The screens we do not own.
+#
+# The harness is headless, so SDL reports one size and the port would only ever
+# be exercised at it - which is exactly how a port ships working on 640x480 and
+# letterboxed everywhere else. MINIGORE_PANEL_W/H force a panel size, and
+# MINIGORE_RENDER picks how the game is fitted to it; both are forwarded only
+# when set, so a plain run is unchanged.
+# MINIGORE_FRAME_STALL travels with them: a large panel under llvmpipe inside
+# qemu takes seconds per frame, and the default 30s stall deadline is a
+# statement about a game that froze, not about one that is merely being
+# rasterised in software at four times the pixel count.
+PANEL_ENV=()
+for var in MINIGORE_PANEL_W MINIGORE_PANEL_H MINIGORE_RENDER MINIGORE_SCALE \
+           MINIGORE_FRAME_STALL; do
+    [ -n "${!var:-}" ] && PANEL_ENV+=(-e "$var=${!var}")
+done
+[ ${#PANEL_ENV[@]} -gt 0 ] && log "panel overrides: ${PANEL_ENV[*]}"
+
 docker run --rm \
     -v "$PORT_DIR":/src \
     -v "$(dirname "$APK")":/apk:ro \
     -w /src \
+    "${PANEL_ENV[@]+"${PANEL_ENV[@]}"}" \
     -e SDL_VIDEODRIVER=offscreen \
     -e LIBGL_ALWAYS_SOFTWARE=1 \
     -e GALLIUM_DRIVER=llvmpipe \

@@ -144,20 +144,46 @@ void android_fb_probe(long frame, int width, int height)
         return;
     }
 
+    /*
+     * Not just "is anything lit" but "which rectangle is lit".
+     *
+     * A game rendering 4:3 into the corner of a 16:9 panel passes the non-black
+     * test exactly as well as one that fills the screen, so the bare answer
+     * cannot settle whether the engine adapted to the surface it was given.
+     * The bounding box of the drawn pixels can, and it costs one comparison per
+     * pixel on a readback that was already being done.
+     */
     unsigned char best = 0;
     long lit = 0;
-    for (size_t i = 0; i < need; i += 4) {
-        unsigned char r = g_buf[i], g = g_buf[i + 1], b = g_buf[i + 2];
-        unsigned char m = r > g ? r : g;
-        if (b > m) m = b;
-        if (m > best) best = m;
-        if ((int)m >= g_threshold) lit++;
+    int min_x = width, max_x = -1, min_y = height, max_y = -1;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            const unsigned char *p = g_buf + ((size_t)y * width + x) * 4;
+            unsigned char m = p[0] > p[1] ? p[0] : p[1];
+            if (p[2] > m) m = p[2];
+            if (m > best) best = m;
+            if ((int)m < g_threshold)
+                continue;
+            lit++;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
     }
 
     if (lit > 0) {
+        /* glReadPixels' origin is the bottom left, and the box is reported in
+         * those coordinates: a letterboxed 640x480 image on a 1280x720 panel
+         * shows up as x=320..959 y=0..719 rather than as something that has to
+         * be flipped in the reader's head. */
         trace("framebuffer non-black at frame %ld: %ld/%ld pixels >= %d, "
-              "brightest channel %d%s",
+              "brightest channel %d, drawn box x=%d..%d y=%d..%d "
+              "(%dx%d of %dx%d)%s",
               frame, lit, (long)(need / 4), g_threshold, (int)best,
+              min_x, max_x, min_y, max_y,
+              max_x - min_x + 1, max_y - min_y + 1, width, height,
               had_pending ? " (a GL error was already pending)" : "");
         /* Answered. Never stall the pipeline again. */
         g_done = true;

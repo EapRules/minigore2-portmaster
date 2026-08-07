@@ -15,9 +15,12 @@
  */
 #include <SDL2/SDL.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <atomic>
+
+#include "thunks/khronos/glad.h"
 
 #include "fb_probe.h"
 
@@ -80,6 +83,21 @@ static EGLint         g_error  = EGL_SUCCESS;
 static bool           g_current = false;
 
 /*
+ * The surface size the game is told about.
+ *
+ * This is where the engine actually learns how big its screen is: it asks
+ * eglQuerySurface, not ANativeWindow_getWidth - measured, by telling the two
+ * different numbers and watching which one came back as its glViewport. So
+ * this, and not the ANativeWindow, is the lever that decides the resolution
+ * the game lays itself out for.
+ *
+ * Zero means "report the real drawable", which is the native path and the
+ * default. The scaled path sets the loader's logical size here, and
+ * viewport_scale then maps that rectangle onto the panel.
+ */
+static int g_logical_w = 0, g_logical_h = 0;
+
+/*
  * Frames the game has presented.
  *
  * eglSwapBuffers is the only place a frame can be counted honestly: it is the
@@ -101,6 +119,14 @@ void android_egl_init(SDL_Window *window, SDL_GLContext gl)
 {
     g_window = window;
     g_gl     = gl;
+}
+
+/* Called by the loader when the game must be told a size other than the
+ * drawable's. Anything <= 0 restores the honest answer. */
+void android_egl_set_logical_size(int w, int h)
+{
+    g_logical_w = w > 0 ? w : 0;
+    g_logical_h = h > 0 ? h : 0;
 }
 
 EGLint eglGetError(void)
@@ -279,7 +305,12 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface surface,
         return fail(EGL_BAD_PARAMETER);
 
     int w = 0, h = 0;
-    SDL_GL_GetDrawableSize(g_window, &w, &h);
+    if (g_logical_w > 0 && g_logical_h > 0) {
+        w = g_logical_w;
+        h = g_logical_h;
+    } else {
+        SDL_GL_GetDrawableSize(g_window, &w, &h);
+    }
     switch (attribute) {
     case EGL_WIDTH:  *value = w; return EGL_TRUE;
     case EGL_HEIGHT: *value = h; return EGL_TRUE;
@@ -306,6 +337,24 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
     /* The pointer the port synthesises for the menus has to be visible, and
      * this is the last moment the game's frame still exists. */
     android_cursor_draw(w, h);
+
+    /*
+     * A black screen has two possible causes that look identical from the
+     * couch: the frame never reaches the panel, or the game drew nothing. One
+     * costs an afternoon if you chase the wrong one.
+     *
+     * MINIGORE_TESTCLEAR paints over the finished frame with a colour the game
+     * would never produce. If the panel turns that colour, the context and the
+     * present path are fine and the problem is upstream, in the engine. If it
+     * stays black, the problem is here. One run, one answer.
+     *
+     * Idea taken from NextOs-Ports, who used it to clear the entire GL pipeline
+     * of suspicion and find that the engine was being handed a 0x0 framebuffer.
+     */
+    if (getenv("MINIGORE_TESTCLEAR") && glad_glClearColor && glad_glClear) {
+        glad_glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+        glad_glClear(GL_COLOR_BUFFER_BIT);
+    }
 
     SDL_GL_SwapWindow(g_window);
     /* Counted after the swap, not before: a frame the driver refused to present

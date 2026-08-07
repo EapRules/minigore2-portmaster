@@ -41,10 +41,18 @@ Nothing is downloaded and no game data ships in this zip.
   Your CFW needs `CONFIG_COMPAT` in the kernel and 32-bit Mali libraries — the
   same requirement as box86 and GMLoader. Devices without 32-bit GPU libraries
   (for example the TrimUI Smart Pro) cannot run this.
-- **glibc 2.38 or newer.** The binary imports symbols up to `GLIBC_2.38`.
+- **glibc 2.29 or newer.** The binary imports symbols up to `GLIBC_2.29` and
+  the bundled libraries no higher, which brings older firmware like ArkOS and
+  AeolusUX into reach. Earlier releases needed 2.38 and would not load there.
+
+The window is opened at the screen's own resolution and the engine lays itself
+out for it, so a 16:9 panel gets a 16:9 game rather than a 4:3 image in the
+corner. If that goes wrong on some device, set `MINIGORE_RENDER=scaled` in
+`Minigore 2.sh` to render at 640x480 and letterbox it instead.
 
 Tested on: R36S (G80CA-MB V1.2, RK3326, Mali-G31) running dArkOSRE. That is the
-only device it has run on.
+only device it has run on; the wide-screen behaviour above was measured under
+the port's headless harness at 1280x720, not on a 16:9 handheld.
 
 ## Controls
 

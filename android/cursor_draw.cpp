@@ -15,6 +15,7 @@
 
 #include "khronos/glad.h"
 #include "trace.h"
+#include "viewport_scale.h"
 
 extern "C" void android_cursor_position(float *x, float *y, int *visible);
 
@@ -160,10 +161,21 @@ extern "C" void android_cursor_draw(int fb_width, int fb_height)
         glad_glVertexAttribPointer((GLuint)g_loc_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
     }
 
+    /*
+     * The cursor's position is in the engine's logical space, because that is
+     * what the touch events it generates must carry. This paints into the
+     * physical framebuffer, so it has to cross the same seam the engine's own
+     * viewport crosses. Identity whenever the two spaces are the same, which
+     * includes the whole native path.
+     */
+    viewport_scale_map(&cx, &cy);
+
     /* Pixel position -> clip space. Y is flipped: touch coordinates grow down. */
     float ndc_x = (cx / (float)fb_width)  * 2.0f - 1.0f;
     float ndc_y = 1.0f - (cy / (float)fb_height) * 2.0f;
-    float size  = 22.0f;                       /* px, on a 640x480 panel */
+    /* 22 px is right on a 640x480 panel; on a larger one it is scaled up by the
+     * same whole-number factor, or it would be a speck the player cannot find. */
+    float size  = 22.0f * (float)viewport_scale_factor();
     float sx    = (size / (float)fb_width)  * 2.0f;
     float sy    = (size / (float)fb_height) * 2.0f;
 

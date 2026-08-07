@@ -18,6 +18,7 @@
 #include <SDL2/SDL.h>
 
 #include "android_api.h"
+#include "app_exit.h"
 #include "trace.h"
 
 /* Android keycodes the game cares about (from android/keycodes.h). */
@@ -615,6 +616,10 @@ extern "C" bool android_platform_pump(void)
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_QUIT:
+            /* Recorded as well as returned: telling the game's looper to
+             * unwind is only half of it, and without the flag the loader's
+             * own loop would sit there until the stall timer fired. */
+            android_app_request_exit("SDL_QUIT");
             keep_running = false;
             break;
 
@@ -989,18 +994,20 @@ extern "C" float AMotionEvent_getHistoricalY(const AInputEvent *e, size_t idx, s
 /* ------------------------------------------------------------------ *
  * native_activity.h — the one call the game makes on itself.
  * ------------------------------------------------------------------ */
-static bool g_finished = false;
 
-/* The game calls this to end the activity (quit from its own menu, or a fatal
- * error inside the engine). Android tears the process down afterwards; here it
- * raises a flag the main loop polls, so shutdown stays on our thread. */
+/*
+ * The game calls this to end the activity: quit from its own menu, or a fatal
+ * error inside the engine. Android tears the process down afterwards; here the
+ * request is recorded and consumed by the loader's loop, so shutdown happens on
+ * that thread rather than inside the engine's own call stack - see app_exit.h.
+ */
 extern "C" void ANativeActivity_finish(ANativeActivity *activity)
 {
     (void)activity;
-    g_finished = true;
+    android_app_request_exit("ANativeActivity_finish()");
 }
 
 extern "C" bool android_platform_finished(void)
 {
-    return g_finished;
+    return android_app_exit_requested();
 }

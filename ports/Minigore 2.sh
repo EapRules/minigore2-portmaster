@@ -60,6 +60,93 @@ cd "$GAMEDIR" || exit 1
 : > "$GAMEDIR/log.txt"
 exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
+# Put the cover where the frontend looks for it.
+#
+# PortMaster is supposed to merge our gameinfo.xml into ports/gamelist.xml when
+# it installs, and on some versions it does. That merge is skipped, silently and
+# without a log line, whenever harbourmaster does not recognise the OS name -
+# any fork or re-release lands on PlatformBase, whose gamelist_file() returns
+# None, and gamelist_backup() then yields None and returns. Nothing fails, no
+# port is broken, the artwork simply never arrives. Since it is the frontend's
+# own convention that every other title on the card relies on
+# (ports/images/<the launcher's name>.png), the port can satisfy it itself
+# rather than depend on which PortMaster the user happens to run.
+#
+# Copy only, once, and never overwrite: a user who put their own artwork there
+# chose it on purpose.
+_mg_img_dir="/$directory/ports/images"
+if [ -f "$GAMEDIR/cover.png" ] && [ ! -e "$_mg_img_dir/Minigore 2.png" ]; then
+  mkdir -p "$_mg_img_dir" 2>/dev/null
+  cp "$GAMEDIR/cover.png" "$_mg_img_dir/Minigore 2.png" 2>/dev/null \
+    && echo "Artwork installed to ports/images/Minigore 2.png"
+fi
+
+# ...and point the frontend's own index at it.
+#
+# Dropping the file in images/ is only half of it: EmulationStation reads
+# ports/gamelist.xml. Deliberately conservative: never touch a gamelist that
+# does not exist (muOS, TrimUI and RetroDECK do not use one), never overwrite an
+# <image> the user already has, back up before writing, and only install the
+# result if it still parses as the same document plus our line.
+_mg_gamelist="/$directory/ports/gamelist.xml"
+if [ -e "$_mg_img_dir/Minigore 2.png" ] && [ -s "$_mg_gamelist" ]; then
+  _mg_tmp="$GAMEDIR/.gamelist.$$"
+  if awk -v P="./Minigore 2.sh" -v IMG="./images/Minigore 2.png" \
+         -v NAME="Minigore 2" '
+      { L[++n] = $0 }
+      END {
+        s = 0; found = 0; hasimg = 0; ins = 0; pad = "\t\t"
+        for (i = 1; i <= n; i++) {
+          if (L[i] ~ /<game>/) { s = i }
+          if (L[i] ~ /<\/game>/ && s > 0) {
+            hit = 0; img = 0; pl = 0
+            for (j = s; j <= i; j++) {
+              if (index(L[j], "<path>" P "</path>") > 0) { hit = 1; pl = j }
+              if (L[j] ~ /<image>/) { img = 1 }
+            }
+            if (hit == 1) { found = 1; hasimg = img; ins = pl }
+            s = 0
+          }
+        }
+        if (found == 1 && hasimg == 1) { exit 1 }
+        if (found == 1) {
+          match(L[ins], /^[ \t]*/)
+          pad = substr(L[ins], 1, RLENGTH)
+          for (i = 1; i <= n; i++) {
+            print L[i]
+            if (i == ins) { print pad "<image>" IMG "</image>" }
+          }
+          exit 0
+        }
+        done = 0
+        for (i = 1; i <= n; i++) {
+          if (L[i] ~ /<\/gameList>/ && done == 0) {
+            print "\t<game>"
+            print "\t\t<path>" P "</path>"
+            print "\t\t<name>" NAME "</name>"
+            print "\t\t<image>" IMG "</image>"
+            print "\t</game>"
+            done = 1
+          }
+          print L[i]
+        }
+        if (done == 0) { exit 1 }
+        exit 0
+      }' "$_mg_gamelist" > "$_mg_tmp" 2>/dev/null; then
+    # Only swap it in if the result is a sane, complete document.
+    if [ -s "$_mg_tmp" ] \
+       && grep -q "</gameList>" "$_mg_tmp" \
+       && grep -q "images/Minigore 2.png" "$_mg_tmp"; then
+      cp "$_mg_gamelist" "$_mg_gamelist.bak" 2>/dev/null
+      if cp "$_mg_tmp" "$_mg_gamelist" 2>/dev/null; then
+        echo "Artwork registered in ports/gamelist.xml"
+      fi
+    fi
+  fi
+  rm -f "$_mg_tmp" 2>/dev/null
+fi
+unset _mg_img_dir _mg_gamelist _mg_tmp
+
 export LD_LIBRARY_PATH="$GAMEDIR/libs.armhf:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
@@ -69,13 +156,65 @@ export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 # style, with A at the bottom, wants "xbox" here.
 export MINIGORE_FACE_LAYOUT="${MINIGORE_FACE_LAYOUT:-nintendo}"
 
-# ALSA hands out one exclusive handle and EmulationStation's menu music is
-# likely holding it, which is why the first device build had no sound at all.
-# dmix mixes in software so several processes can share the card. If the CFW
-# has no dmix configured this name simply fails and the loader falls back to
-# enumerating whatever devices SDL reports.
-export AUDIODEV="${AUDIODEV:-plug:dmix}"
-export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
+# How the game is fitted to this screen.
+#
+# The engine reads its resolution from the EGL surface and lays itself out for
+# whatever it is given - measured under the harness at 1280x720, where it
+# issued a full-screen 1280x720 viewport of its own accord and painted the
+# whole panel. So the port opens the window at the device's real size and
+# leaves the engine alone, which is what "native" means here and why it is the
+# default on every device, 4:3 or not.
+#
+# "scaled" is the break-glass alternative: render at the original 640x480 and
+# letterbox that onto the panel (MINIGORE_SCALE = fit / stretch / integer). It
+# exists for a screen where the engine's own layout turns out wrong, which no
+# device available to this port has shown.
+#
+# MINIGORE_PANEL_W/H force a panel size on a firmware that reports the wrong
+# one; unset, SDL's desktop mode decides.
+export MINIGORE_RENDER="${MINIGORE_RENDER:-native}"
+export MINIGORE_SCALE="${MINIGORE_SCALE:-fit}"
+
+# Audio routing is decided by what the device actually runs, never by CFW name -
+# the same principle as the display above: detect the capability, adapt to it.
+# If a user audio server is present (PipeWire, or a PulseAudio socket), the
+# 32-bit game must route through it or it grabs a PCM nobody is listening to and
+# plays silence. If none is found, fall back to ALSA dmix: ALSA hands out one
+# exclusive handle and EmulationStation's menu music is likely holding it, which
+# is why the first device build had no sound at all, and dmix mixes in software
+# so several processes can share the card. No device or firmware is named.
+_mg_pw=""
+for _pw in /usr/lib32/pipewire-0.3 /usr/lib/arm-linux-gnueabihf/pipewire-0.3; do
+  [ -d "$_pw" ] && { _mg_pw="$_pw"; break; }
+done
+for _xrd in "${XDG_RUNTIME_DIR:-}" /run/user/0 /var/run/user/0; do
+  [ -n "$_xrd" ] && [ -d "$_xrd" ] && { export XDG_RUNTIME_DIR="$_xrd"; break; }
+done
+_mg_pulse=""
+for _pulse in "${XDG_RUNTIME_DIR:-}/pulse/native" /run/pulse/native /var/run/pulse/native; do
+  [ -n "$_pulse" ] && [ -S "$_pulse" ] && { _mg_pulse="$_pulse"; break; }
+done
+if [ -n "$_mg_pw" ] || [ -n "$_mg_pulse" ]; then
+  unset AUDIODEV ALSA_CONFIG_PATH SDL_AUDIO_DEVICE_NAME ALSA_CARD
+  export SDL_AUDIODRIVER=alsa
+  export ALSOFT_DRIVERS=alsa
+  export SDL_AUDIO_ALSA_SET_BUFFER_SIZE=1
+  for _spa in /usr/lib32/spa-0.2 /usr/lib/arm-linux-gnueabihf/spa-0.2; do
+    [ -d "$_spa" ] && { export SPA_PLUGIN_DIR="$_spa"; break; }
+  done
+  [ -n "$_mg_pw" ] && export PIPEWIRE_MODULE_DIR="$_mg_pw"
+  if [ -n "$_mg_pulse" ]; then
+    export PULSE_SERVER="unix:$_mg_pulse"
+  else
+    unset PULSE_SERVER
+  fi
+  echo "Audio: routing through the device's audio server (PipeWire/Pulse), dmix bypassed"
+else
+  export AUDIODEV="${AUDIODEV:-plug:dmix}"
+  export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
+  echo "Audio: ALSA dmix (no audio server detected)"
+fi
+unset _mg_pw _mg_pulse _pw _pulse _xrd _spa
 
 CUR_TTY=/dev/tty0
 [ -w "$CUR_TTY" ] || CUR_TTY=/dev/tty1
@@ -182,13 +321,43 @@ EOF
   fi
 fi
 
-# On this hardware libEGL.so.1 resolves through glvnd to Mesa, while
+# SDL must create its context through the device's own 32-bit GL stack.
+#
+# On the tested hardware libEGL.so.1 resolves through glvnd to Mesa while
 # libGLESv2.so.2 is the Mali blob. Mixing the two yields a context that looks
 # valid and then reports null for every GL string, so the game renders nothing.
-# Point both names at the blob and put that directory first.
+# The fix is to decide the whole stack here and put it first on the path.
 #
-# It has to be built at runtime under /tmp: the SD card is exFAT, which has no
-# symlinks, so a shim shipped inside the port would arrive as broken files.
+# Which stack that is depends on the device, not on the firmware's name, so it
+# is found by capability:
+#
+#   1. A unified Mali blob - one .so exporting EGL and GLESv2. Try the exact
+#      tested filenames first (fast, known-good), then any Mali build in the
+#      32-bit library directories, because every distribution names it
+#      differently: versioned upstream names on Debian-style CFWs
+#      (libmali-bifrost-g31-*.so), an unversioned libmali.so.1 on Buildroot
+#      ones, libMali.so where a firmware symlinks it. The blob is then linked
+#      to every name the game asks for.
+#   2. No blob, but a real 32-bit EGL/GLES set - a Mesa/glvnd userland, which
+#      is what a Panfrost-only device ships. Each entry point is linked under
+#      its own name, taken from the one directory that provides libEGL, since a
+#      set assembled from two userlands would not be one working stack.
+#   3. Neither. Say so on screen instead of leaving the user with a black
+#      panel: without a 32-bit provider SDL either falls back to something that
+#      never reaches the framebuffer, or fails to create a window at all.
+#
+# Directories are architecture-scoped, so a 64-bit library can never be picked:
+# the multiarch triplet dir and lib32 are 32-bit by definition, and the bare
+# /usr/lib and /lib are only consulted on a pure-armhf rootfs.
+#
+# The shim has to be built at runtime under /tmp: the SD card is exFAT, which
+# has no symlinks, so one shipped inside the port would arrive as broken files.
+GL_DIRS="/usr/lib/arm-linux-gnueabihf /usr/lib/arm-linux-gnueabihf/mali \
+/lib/arm-linux-gnueabihf /usr/lib32/mali /usr/lib32"
+if [ "${DEVICE_ARCH:-}" = "armhf" ]; then
+  GL_DIRS="$GL_DIRS /usr/lib /lib"
+fi
+
 MALI_BLOB=""
 for candidate in \
     /usr/lib/arm-linux-gnueabihf/libmali-bifrost-g31-rxp0-gbm.so \
@@ -196,19 +365,63 @@ for candidate in \
     /usr/lib/arm-linux-gnueabihf/libmali.so.1; do
   [ -e "$candidate" ] && { MALI_BLOB="$candidate"; break; }
 done
+if [ -z "$MALI_BLOB" ]; then
+  for _gldir in $GL_DIRS; do
+    [ -d "$_gldir" ] || continue
+    for _cand in "$_gldir"/libmali-*.so "$_gldir"/libmali.so.* \
+                 "$_gldir"/libmali.so "$_gldir"/libMali.so*; do
+      [ -e "$_cand" ] && { MALI_BLOB="$_cand"; break; }
+    done
+    [ -n "$MALI_BLOB" ] && break
+  done
+fi
 
+GL_SHIM="/tmp/minigore2-gl"
+rm -rf "$GL_SHIM"
+GL_READY=""
 if [ -n "$MALI_BLOB" ]; then
-  GL_SHIM="/tmp/minigore2-gl"
-  rm -rf "$GL_SHIM"
-  if mkdir -p "$GL_SHIM" && ln -sf "$MALI_BLOB" "$GL_SHIM/libEGL.so.1" \
-                          && ln -sf "$MALI_BLOB" "$GL_SHIM/libGLESv2.so.2"; then
-    export LD_LIBRARY_PATH="$GL_SHIM:$LD_LIBRARY_PATH"
-    echo "GL: forcing the Mali blob from $MALI_BLOB"
+  if mkdir -p "$GL_SHIM" \
+     && ln -sf "$MALI_BLOB" "$GL_SHIM/libEGL.so.1" \
+     && ln -sf "$MALI_BLOB" "$GL_SHIM/libGLESv2.so.2" \
+     && ln -sf "$MALI_BLOB" "$GL_SHIM/libmali.so.1"; then
+    GL_READY="y"
+    echo "GL: using Mali blob $MALI_BLOB"
   else
-    echo "GL: could not build the shim in $GL_SHIM, using the system default"
+    echo "GL: failed to create $GL_SHIM, using system libraries"
   fi
 else
-  echo "GL: no Mali blob found, using the system default"
+  GL_EGL=""
+  mkdir -p "$GL_SHIM" 2>/dev/null
+  for _gldir in $GL_DIRS; do
+    [ -e "$_gldir/libEGL.so.1" ] || continue
+    for _soname in libEGL.so.1 libGLESv2.so.2; do
+      [ -e "$_gldir/$_soname" ] && ln -sf "$_gldir/$_soname" "$GL_SHIM/$_soname"
+    done
+    [ -e "$GL_SHIM/libEGL.so.1" ] && { GL_EGL="$_gldir/libEGL.so.1"; break; }
+  done
+  if [ -n "$GL_EGL" ]; then
+    GL_READY="y"
+    echo "GL: no Mali blob; using the device's 32-bit EGL/GLES set ($GL_EGL)"
+  fi
+fi
+
+if [ -n "$GL_READY" ]; then
+  export LD_LIBRARY_PATH="$GL_SHIM:$LD_LIBRARY_PATH"
+else
+  rm -rf "$GL_SHIM"
+  echo "GL: no 32-bit GL provider found; searched: $GL_DIRS"
+  show_screen 12 <<EOF
+
+  Minigore 2 - no 32-bit GPU driver
+
+  This firmware ships no 32-bit Mali
+  blob and no 32-bit EGL/GLES set, so
+  the game cannot open a window.
+
+  The screen will stay black or the
+  game will exit. See log.txt.
+
+EOF
 fi
 
 # The engine's writable storage. Kept inside the port directory so the port

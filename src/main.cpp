@@ -31,6 +31,8 @@
 #include "android_api.h"
 #include "crash.h"
 #include "trace.h"
+#include "viewport_scale.h"
+#include "app_exit.h"
 
 extern "C" void android_assets_init(zip_t *apk);
 extern "C" AAssetManager *android_assets_manager(void);
@@ -40,6 +42,7 @@ extern "C" ANativeWindow *android_platform_window(void);
 extern "C" AInputQueue *android_platform_queue(void);
 extern "C" bool android_platform_finished(void);
 extern "C" void android_egl_init(SDL_Window *win, SDL_GLContext gl);
+extern "C" void android_egl_set_logical_size(int w, int h);
 extern "C" bool android_egl_is_current(void);
 extern "C" long android_egl_frames(void);
 extern "C" int android_gl_shaders_compiled(void);
@@ -77,10 +80,83 @@ static void trace_summary(void)
 static const char *kNativeLib     = "libminigore2.so";
 static const char *kNativeLibPath = "lib/armeabi-v7a/libminigore2.so";
 
-/* The R36S panel. The window is created at this size so the game's very first
- * eglQuerySurface already reports the resolution it will render at. */
+/*
+ * The resolution the port was written for. It is no longer what the window is
+ * created at - see resolve_panel() - but it is still the fallback when the
+ * panel cannot be determined, and the logical size the scaled path renders at.
+ */
 static const int kWidth  = 640;
 static const int kHeight = 480;
+
+/*
+ * How the game is fitted to the screen.
+ *
+ * NATIVE hands the engine the panel's real size: the window, the ANativeWindow
+ * it is told about and the touch coordinates are all in physical pixels, and
+ * nothing is remapped. This is the right answer when the engine lays itself
+ * out from the surface size, which is what an Android game shipped for hundreds
+ * of phone resolutions normally does.
+ *
+ * SCALED renders at the fixed 640x480 the port was built around and lets
+ * viewport_scale_init map that rectangle onto the panel (fit/stretch/integer).
+ * It is the answer for an engine that ignores the surface size, where a 16:9
+ * window would only move the 4:3 image into a corner.
+ *
+ * MINIGORE_RENDER selects one; it exists because only a device with a
+ * non-4:3 panel can settle the question, and the person holding one should not
+ * have to wait for a rebuild.
+ */
+enum RenderMode { RENDER_NATIVE = 0, RENDER_SCALED = 1 };
+
+static RenderMode render_mode(void)
+{
+    const char *v = getenv("MINIGORE_RENDER");
+    if (v && strcmp(v, "scaled") == 0)
+        return RENDER_SCALED;
+    return RENDER_NATIVE;
+}
+
+/*
+ * The panel to open the window on.
+ *
+ * SDL's desktop mode is the device's own statement of its resolution, and on
+ * KMSDRM that is the panel. MINIGORE_PANEL_W/H overrides it - both for a CFW
+ * that reports the wrong size and to exercise a screen we do not own under the
+ * harness, which is otherwise headless and would only ever report one size.
+ * Anything implausible falls back to 640x480 rather than opening a window the
+ * device cannot present.
+ */
+static void resolve_panel(int *out_w, int *out_h)
+{
+    int w = 0, h = 0;
+
+    SDL_DisplayMode mode;
+    if (SDL_GetDesktopDisplayMode(0, &mode) == 0) {
+        w = mode.w;
+        h = mode.h;
+        trace("panel: SDL reports %dx%d", w, h);
+    } else {
+        trace("panel: SDL could not report a display mode (%s)", SDL_GetError());
+    }
+
+    const char *env_w = getenv("MINIGORE_PANEL_W");
+    const char *env_h = getenv("MINIGORE_PANEL_H");
+    if (env_w && *env_w && env_h && *env_h) {
+        w = atoi(env_w);
+        h = atoi(env_h);
+        trace("panel: overridden to %dx%d by MINIGORE_PANEL_W/H", w, h);
+    }
+
+    if (w < 320 || h < 240 || w > 8192 || h > 8192) {
+        trace("panel: %dx%d is not usable, falling back to %dx%d",
+              w, h, kWidth, kHeight);
+        w = kWidth;
+        h = kHeight;
+    }
+
+    *out_w = w;
+    *out_h = h;
+}
 
 /*
  * The API level the game is told it is running on.
@@ -267,9 +343,18 @@ int main(int argc, char **argv)
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
 
+    /*
+     * The window is the panel, not a fixed 640x480. Everything the engine is
+     * later told about its screen - ANativeWindow_getWidth/Height,
+     * eglQuerySurface - follows from this one size, so it is resolved before
+     * the window exists rather than corrected afterwards.
+     */
+    int panel_w = kWidth, panel_h = kHeight;
+    resolve_panel(&panel_w, &panel_h);
+
     SDL_Window *window = SDL_CreateWindow(
         "Minigore 2", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        kWidth, kHeight, SDL_WINDOW_OPENGL);
+        panel_w, panel_h, SDL_WINDOW_OPENGL);
     if (!window) {
         fatal("SDL_CreateWindow failed: %s", SDL_GetError());
         zip_close(apk);
@@ -284,8 +369,58 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    android_platform_init(window, kWidth, kHeight);
+    /*
+     * The drawable, not the window, is what the engine will see through
+     * eglQuerySurface, and the two can differ (a compositor scaling the
+     * window, a HiDPI surface). Ask for it once here and let both the input
+     * space and the scaling seam be derived from the same number.
+     */
+    int draw_w = panel_w, draw_h = panel_h;
+    SDL_GL_GetDrawableSize(window, &draw_w, &draw_h);
+    if (draw_w <= 0 || draw_h <= 0) {
+        draw_w = panel_w;
+        draw_h = panel_h;
+    }
+
+    const RenderMode mode = render_mode();
+    const int log_w = (mode == RENDER_NATIVE) ? draw_w : kWidth;
+    const int log_h = (mode == RENDER_NATIVE) ? draw_h : kHeight;
+
+    trace("render mode: %s (drawable %dx%d, engine told %dx%d)",
+          mode == RENDER_NATIVE ? "native" : "scaled",
+          draw_w, draw_h, log_w, log_h);
+
+    /*
+     * The shipped splash override is a 4:3 crop of the game's own 1280x720
+     * image, made so it fills a 640x480 panel instead of sitting letterboxed.
+     * On a wide panel that reasoning inverts: the APK's original is already the
+     * right shape and ours would be the one that does not fit. So the override
+     * directory is only consulted when the screen is roughly 4:3.
+     *
+     * MINIGORE_ASSET_OVERRIDE_FORCE keeps it on regardless, for someone who put
+     * their own artwork there and means it.
+     */
+    if (getenv("MINIGORE_ASSET_OVERRIDE") &&
+        !getenv("MINIGORE_ASSET_OVERRIDE_FORCE")) {
+        float aspect = (float)draw_w / (float)draw_h;
+        if (aspect > 1.40f) {
+            unsetenv("MINIGORE_ASSET_OVERRIDE");
+            trace("asset overrides disabled: the %dx%d panel is not 4:3, so the "
+                  "APK's own artwork fits it better (MINIGORE_ASSET_OVERRIDE_"
+                  "FORCE overrides)", draw_w, draw_h);
+        }
+    }
+
+    android_platform_init(window, log_w, log_h);
     android_egl_init(window, gl);
+    /* eglQuerySurface is where the engine reads its screen size from, so the
+     * scaled path has to answer it with the logical size; on the native path
+     * the two are equal and this restores the plain drawable answer. */
+    android_egl_set_logical_size(mode == RENDER_SCALED ? log_w : 0,
+                                 mode == RENDER_SCALED ? log_h : 0);
+    /* Identity on the native path and on a 640x480 panel; only the scaled path
+     * on a larger screen ever rewrites a viewport. */
+    viewport_scale_init(draw_w, draw_h, log_w, log_h);
 
     /* Fills symtable_gles2 from the live driver. */
     load_gles2_funcs();
